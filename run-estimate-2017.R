@@ -58,7 +58,7 @@ df_counts <- df_counts_all %>%
     hour(start) < 19,
     hour(end) >= 7,
     !end %in% exclude_ends,
-    !(hour(start) != hour(end) & hour(end) %in% c(7, 11, 15, 19) & minute(end) > 0)
+    !(hour(start) != hour(end) & hour(end) %in% c(7, 11, 15, 19) & minute(end) > 0) # exclude any 10-min periods that cross from one 4-hour period to the next
   ) %>%
   mutate(
     hour = hour(start),
@@ -74,6 +74,7 @@ df_counts <- df_counts_all %>%
   ) %>%
   select(date, start, end, hour, period, y_kpi)
 
+# daily summary statistics, note that these are NOT used for total run estimates
 df_daily_stats <- df_counts %>%
   group_by(date) %>%
   summarise(
@@ -89,36 +90,36 @@ df_daily_stats <- df_counts %>%
 df_period <- df_counts %>%
   group_by(date, period) %>%
   summarise(
-    y_kp = mean(y_kpi),
+    y_kp = mean(y_kpi),            # mean count per period
     n_kp = n(),
-    s_kp = coalesce(sd(y_kpi), 0),
+    s_kp = coalesce(sd(y_kpi), 0), # st. dev of period count (Eq 13)
     N_kp = 6 * 4
   ) %>%
   ungroup() %>%
   mutate(
-    Y_kp = N_kp * y_kp,
-    varY_kp = N_kp * (N_kp - n_kp) * s_kp^2 / n_kp,
-    a_kp = N_kp * (N_kp - n_kp) / n_kp
+    Y_kp = N_kp * y_kp,                              # estimated total coun per period (Eq 12)
+    varY_kp = N_kp * (N_kp - n_kp) * s_kp^2 / n_kp,  # variance of total count per period (Eq 13)
+    a_kp = N_kp * (N_kp - n_kp) / n_kp               # coefficient used to estimate deg. of freedom (Eq 9)
   )
 
 df_day <- df_period %>%
   group_by(date) %>%
   summarise(
-    n_p = n(),
-    n_k = sum(n_kp),
-    N_k = sum(N_kp),
-    Y_k = sum(Y_kp),
-    varY_k = sum(varY_kp),
+    n_p = n(),                                      # Number of periods per day
+    n_k = sum(n_kp),                                # Number of counts per day
+    N_k = sum(N_kp),                                # Number of 10-min intervals per day (NOTE! only includes daily hours, 0700-1900)
+    Y_k = sum(Y_kp),                                # Daily estimated run (Eq 12)
+    varY_k = sum(varY_kp),                          # Variance of daily estimated run (Eq 13)
     se_k = sqrt(varY_k),
-    df_num = sum(a_kp * s_kp ^ 2),
-    df_den = sum((a_kp * s_kp ^ 2) ^ 2 / (n_kp - 1), na.rm = TRUE),
-    df = df_num ^ 2 / df_den,
+    df_num = sum(a_kp * s_kp ^ 2),                  # numerator of Eq 9
+    df_den = sum((a_kp * s_kp ^ 2) ^ 2 / (n_kp - 1), na.rm = TRUE), # denominator of Eq 9
+    df = df_num ^ 2 / df_den,                       # degrees of freedom (Eq 9)
     df = round(df),
-    t_star = map_dbl(df, ~ qt(0.975, df = .)),
+    t_star = map_dbl(df, ~ qt(0.975, df = .)),      # t distribution statistic, two-sided 95% CI
     df = coalesce(df, 0),
     t_star = coalesce(t_star, 0),
-    ci_lower = Y_k - t_star * sqrt(varY_k),
-    ci_upper = Y_k + t_star * sqrt(varY_k)
+    ci_lower = Y_k - t_star * sqrt(varY_k),         # Lower 95% CI Bound (Eq 14)
+    ci_upper = Y_k + t_star * sqrt(varY_k)          # Upper 95% CI Bound (Eq 14)
   ) %>%
   mutate(
     Y_k = round(Y_k),
@@ -129,13 +130,13 @@ df_day <- df_period %>%
 df_run <- df_day %>%
   summarise(
     N = sum(N_k),
-    total = sum(Y_k),
-    se = sqrt(sum(varY_k)),
-    df = sum(df_num) ^ 2 / sum(df_den),
+    total = sum(Y_k),                            # Total run estimate
+    se = sqrt(sum(varY_k)),                      # Std. error of total run estimate
+    df = sum(df_num) ^ 2 / sum(df_den),          # Degrees of freedom (Eq 9)
     df = round(df),
-    t_star = map_dbl(df, ~ qt(0.975, df = .)),
-    ci_lower = total - t_star * se,
-    ci_upper = total + t_star * se
+    t_star = map_dbl(df, ~ qt(0.975, df = .)),   # t statistic
+    ci_lower = total - t_star * se,              # Lower 95% CI Bound (Eq 14)
+    ci_upper = total + t_star * se               # Upper 95% CI Bound (Eq 14)
   )
 
 
@@ -146,6 +147,7 @@ print(df_period) # period statistics
 print(df_day)    # daily statistics
 print(df_run)    # total run statistics
 
+# plot daily run estimates with 95% CI
 df_day %>%
   ggplot(aes(date, Y_k)) +
   geom_col() +
@@ -153,7 +155,7 @@ df_day %>%
   ylim(0, NA) +
   labs(
     x = "Date",
-    y = "Estimate Daily Run"
+    y = "Estimate Daily Run (95% CI)"
   )
 
 
